@@ -1,0 +1,41 @@
+{
+    "name": "webdna/commerce-multi-coupon",
+    "description": "Multiple coupon support",
+    "type": "craft-plugin",
+    "license": "proprietary",
+    "support": {
+        "email": "info@webdna.co.uk",
+        "issues": "https://github.com/webdna/commerce-muti-coupon/issues?state=open",
+        "source": "https://github.com/webdna/commerce-multi-coupon",
+        "docs": "https://github.com/webdna/commerce-multi-coupon",
+        "rss": "https://github.com/webdna/commerce-multi-coupon/releases.atom"
+    },
+    "require": {
+        "php": ">=8.0.2",
+        "craftcms/cms": "^4.3.5||^5.0.0",
+        "craftcms/commerce": "^4.0.0||^5.0.0"
+    },
+    "autoload": {
+        "psr-4": {
+            "webdna\\commerce\\multicoupon\\": "src/"
+        }
+    },
+    "extra": {
+        "handle": "commerce-multi-coupon",
+        "name": "Multiple Coupons",
+        "developer": "webdna",
+        "documentationUrl": "https://github.com/webdna/commerce-multi-coupon",
+        "class": "webdna\\commerce\\multicoupon\\MultiCoupon"
+    },
+    "config": {
+        "sort-packages": true,
+        "platform": {
+            "php": "8.0.2"
+        },
+        "allow-plugins": {
+            "yiisoft/yii2-composer": true,
+            "craftcms/plugin-installer": true
+        }
+    }
+}
+
