@@ -107,9 +107,9 @@ class MultiCouponCodes extends DiscountAdjuster
 		foreach ($this->_order->getLineItems() as $item) {
 			$lineItemHashId = spl_object_hash($item);
 			// Order is already a match to this discount, or we wouldn't get here.
-			$matchingLineIds[] = $lineItemHashId;
+			//$matchingLineIds[] = $lineItemHashId;
 
-			if (Commerce::getInstance()->getDiscounts()->matchLineItem($item, $discount, false)) {
+			if (MultiCoupon::getInstance()->discounts->matchLineItem($item, $discount, false)) {
 				$matchingLineIds[] = $lineItemHashId;
 			}
 		}
