@@ -101,15 +101,19 @@ class MultiCoupon extends Plugin
                 }
                 
                 
-                if ($order->couponCode) {
-                    if ($discount = $this::getInstance()->discounts->isValidCode($order->couponCode)) {
+                if ($order->couponCode || $request->getParam('couponCode')) {
+                    $code = $order->couponCode ?? $request->getParam('couponCode');
+                    if ($discount = $this::getInstance()->discounts->isValidCode($code)) {
                         
                         Db::upsert('{{%commerce-multi-coupon_couponcodes}}',
                         [
-                            'code' => $order->couponCode,
+                            'code' => $code,
                             'discountId' => $discount->id,
                             'orderId' => $order->id,
                         ], false);
+                        Craft::$app->getSession()->setFlash('couponSuccess', 'Coupon successfully applied to eligible items');
+                    } else {
+                        Craft::$app->getSession()->setFlash('couponFail', 'Coupon is invalid');
                     }
                 }
                 
