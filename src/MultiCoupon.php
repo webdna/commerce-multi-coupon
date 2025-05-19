@@ -83,43 +83,43 @@ class MultiCoupon extends Plugin
             function(ModelEvent $event) {
                 $order = $event->sender;
                 $request = Craft::$app->getRequest();
-                    
-                if (!Craft::$app->request->isConsoleRequest && $couponCodes = $request->getParam('couponCodes')) {
-                    $removeCodes = [];
-                    foreach ($couponCodes as $key => $couponCode) {
-                        if ($remove = $request->getParam("couponCodes.$key.remove", false)) {
-                            $removeCodes[] = $key;
+                if(!Craft::$app->request->isConsoleRequest){
+                    if ($couponCodes = $request->getParam('couponCodes')) {
+                        $removeCodes = [];
+                        foreach ($couponCodes as $key => $couponCode) {
+                            if ($remove = $request->getParam("couponCodes.$key.remove", false)) {
+                                $removeCodes[] = $key;
+                            }
+                        }
+                        
+                        if (count($removeCodes)) {
+                            Db::delete('{{%commerce-multi-coupon_couponcodes}}', [
+                                'orderId' => $order->id,
+                                'code' => $removeCodes,
+                            ]);
                         }
                     }
                     
-                    if (count($removeCodes)) {
-                        Db::delete('{{%commerce-multi-coupon_couponcodes}}', [
-                            'orderId' => $order->id,
-                            'code' => $removeCodes,
-                        ]);
+                    
+                    if ($order->couponCode || $request->getParam('couponCode')) {
+                        $code = $order->couponCode ?? $request->getParam('couponCode');
+                        if ($discount = $this::getInstance()->discounts->isValidCode($code)) {
+                            
+                            Db::upsert('{{%commerce-multi-coupon_couponcodes}}',
+                            [
+                                'code' => $code,
+                                'discountId' => $discount->id,
+                                'orderId' => $order->id,
+                            ], false);
+                            Craft::$app->getSession()->setFlash('couponSuccess', 'Coupon successfully applied to eligible items');
+                        } else {
+                            Craft::$app->getSession()->setFlash('couponFail', 'Coupon is invalid');
+                        }
                     }
+                    
+                    $order->couponCode = null;
                 }
-                
-                
-                if ($order->couponCode || $request->getParam('couponCode')) {
-                    $code = $order->couponCode ?? $request->getParam('couponCode');
-                    if ($discount = $this::getInstance()->discounts->isValidCode($code)) {
-                        
-                        Db::upsert('{{%commerce-multi-coupon_couponcodes}}',
-                        [
-                            'code' => $code,
-                            'discountId' => $discount->id,
-                            'orderId' => $order->id,
-                        ], false);
-                        Craft::$app->getSession()->setFlash('couponSuccess', 'Coupon successfully applied to eligible items');
-                    } else {
-                        Craft::$app->getSession()->setFlash('couponFail', 'Coupon is invalid');
-                    }
-                }
-                
-                $order->couponCode = null;
             }
         );
-
     }
 }
