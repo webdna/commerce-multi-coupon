@@ -15,6 +15,7 @@ use craft\commerce\models\LineItem;
 use craft\commerce\models\OrderAdjustment;
 use craft\commerce\records\Discount as DiscountRecord;
 use craft\helpers\ArrayHelper;
+use Money\Teller;
 
 class MultiCouponCodes extends DiscountAdjuster
 {
@@ -46,9 +47,8 @@ class MultiCouponCodes extends DiscountAdjuster
 	public function adjust(Order $order): array
 	{
 		$this->_order = $order;
-		
-		
-		
+		$teller = $this->_getTeller();
+
 		$adjustments = [];
 		$availableDiscounts = [];
 		$discounts = MultiCoupon::getInstance()->discounts->getAllActiveDiscounts($order);
@@ -61,6 +61,27 @@ class MultiCouponCodes extends DiscountAdjuster
 						$availableDiscounts[$discount->id] = $discount;
 					}
 				}
+			} else {
+				if (Commerce::getInstance()->getDiscounts()->matchOrder($order, $discount)) {
+					$availableDiscounts[] = $discount;
+				}
+			}
+		}
+		
+		if (!$availableDiscounts) {
+			return [];
+		}
+		
+		
+		foreach ($this->_order->getLineItems() as $lineItem) {
+			$lineItemHashId = spl_object_hash($lineItem);
+			$lineItemDiscountAmount = $lineItem->getDiscount();
+			if ($lineItemDiscountAmount) {
+				$discountedUnitPrice = (float)$teller->add(
+					$lineItem->salePrice,
+					$teller->divide($lineItemDiscountAmount, $lineItem->qty)
+				);
+				$this->_discountUnitPricesByLineItem[$lineItemHashId] = $discountedUnitPrice;
 			}
 		}
 		
@@ -76,6 +97,92 @@ class MultiCouponCodes extends DiscountAdjuster
 		}
 		
 		$order->couponCode = null;
+		
+		if ($this->_spreadBaseOrderDiscountsToLineItems) {
+			$priceByLineItem = [];
+			foreach ($this->_order->getLineItems() as $lineItem) {
+				$lineItemHashId = spl_object_hash($lineItem);
+				$priceByLineItem[$lineItemHashId] = (float)$teller->add($lineItem->getSubtotal(), $lineItem->getDiscount());
+			}
+		
+			$orderLevelAdjustments = [];
+		
+			// Remove other plugins previous order level discount adjustments
+			$allAdjustments = $this->_order->getAdjustments();
+			foreach ($allAdjustments as $key => $previousAdjustment) {
+				if ($previousAdjustment->type == self::ADJUSTMENT_TYPE && !$previousAdjustment->getLineItem()) {
+					$orderLevelAdjustments[] = $previousAdjustment;
+					unset($allAdjustments[$key]);
+				}
+			}
+			$this->_order->setAdjustments($allAdjustments);
+		
+			// Our adjustments
+			foreach ($adjustments as $key => $adjustment) {
+				if ($adjustment->getLineItem()) {
+					$lineItemHashId = spl_object_hash($adjustment->getLineItem());
+					// Reduce the price of the line item by the amount of discount from the adjuster
+					$priceByLineItem[$lineItemHashId] = (float)$teller->add($priceByLineItem[$lineItemHashId] ?? 0, $adjustment->amount);
+				} else {
+					// If it's an order level adjustment lets track it, but remove it from the standard adjustments.
+					$orderLevelAdjustments[] = $adjustment;
+					unset($adjustments[$key]);
+				}
+			}
+		
+			$lineItemsByPrice = $this->_order->getLineItems();
+			ArrayHelper::multisort($lineItemsByPrice, static function($item) use ($priceByLineItem) {
+				// sort by age if it exists or by name otherwise
+				/** @var LineItem $item */
+				$lineItemHashId = spl_object_hash($item);
+				return $priceByLineItem[$lineItemHashId];
+			}, SORT_DESC);
+		
+			// Remove non-promotable line items
+			$lineItemsByPrice = ArrayHelper::where($lineItemsByPrice, fn(LineItem $lineItem) => $lineItem->getIsPromotable(), true, true);
+		
+			// Loop over each order level adjustment and add an adjustment to each line item until it runs out.
+			foreach ($orderLevelAdjustments as $orderLevelAdjustment) {
+				// Track the amount of discount (as a positive number), as we are going to deduct it as we use it up on line items.
+				$currentDiscountAmountRemaining = -$orderLevelAdjustment->amount;
+		
+				// Lets loop over the line items and apply some or all of the discount amount
+				foreach ($lineItemsByPrice as $lineItem) {
+		
+					// We need to know the hash ID of the line item since some line items do not have an ID yet
+					$lineItemHashId = spl_object_hash($lineItem);
+		
+					// Do we have any discount left to use, and can the line item still be discounted?
+					if ($currentDiscountAmountRemaining > 0 && $priceByLineItem[$lineItemHashId] > 0) {
+		
+						// The amount of the adjustment for this line item.
+						$amount = 0;
+		
+						// Is the amount of discount greater than the price of the item
+						if ($currentDiscountAmountRemaining >= $priceByLineItem[$lineItemHashId]) {
+							$amount = (float)$teller->multiply($priceByLineItem[$lineItemHashId], -1); // Take the full price of the item off
+							$priceByLineItem[$lineItemHashId] = 0; // Price is now free
+							$currentDiscountAmountRemaining = (float)$teller->add($currentDiscountAmountRemaining, $amount); // Reduce the price of the discount remaining so it can still be used
+						} else {
+							// Is the current amount of discount remaining less than the current price of the item? Take the whole discount remainder off the item.
+							if ($currentDiscountAmountRemaining < $priceByLineItem[$lineItemHashId]) {
+								$amount = (float)$teller->multiply($currentDiscountAmountRemaining, -1); // The adjustment amount is always a negative number
+								$currentDiscountAmountRemaining = 0; // Reduce the amount of discount to zero since there is none left
+								$priceByLineItem[$lineItemHashId] = (float)$teller->add($priceByLineItem[$lineItemHashId], $amount); // Reduce the price of the item that we are tracking
+							}
+						}
+		
+						if ($amount) {
+							/** @var OrderAdjustment $adjustment */
+							$adjustment = clone $orderLevelAdjustment;
+							$adjustment->amount = $amount;
+							$adjustment->setLineItem($lineItem);
+							$adjustments[] = $adjustment;
+						}
+					}
+				}
+			}
+		}
 		
 		return $adjustments;
 	}
@@ -102,13 +209,12 @@ class MultiCouponCodes extends DiscountAdjuster
 	private function _getAdjustments(DiscountModel $discount): array|false
 	{
 		$adjustments = [];
+		$teller = $this->_getTeller();
 	
 		$matchingLineIds = [];
 		foreach ($this->_order->getLineItems() as $item) {
 			$lineItemHashId = spl_object_hash($item);
 			// Order is already a match to this discount, or we wouldn't get here.
-			//$matchingLineIds[] = $lineItemHashId;
-
 			if (MultiCoupon::getInstance()->discounts->matchLineItem($item, $discount, false)) {
 				$matchingLineIds[] = $lineItemHashId;
 			}
@@ -123,24 +229,27 @@ class MultiCouponCodes extends DiscountAdjuster
 				$amountPerItem = Currency::round($discount->perItemDiscount);
 	
 				if ($discount->percentageOffSubject == DiscountRecord::TYPE_ORIGINAL_SALEPRICE) {
-					$discountAmountPerItemPreDiscounts = ($discount->percentDiscount * $item->salePrice);
+					$discountAmountPerItemPreDiscounts = (float)$teller->multiply($item->salePrice, $discount->percentDiscount);
 				}
 	
 				$unitPrice = $this->_discountUnitPricesByLineItem[$lineItemHashId] ?? $item->salePrice;
 	
-				$lineItemSubtotal = Currency::round($unitPrice * $item->qty);
+				$lineItemSubtotal = (float)$teller->multiply($item->qty, $unitPrice);
 	
-				$unitPrice = max($unitPrice + $amountPerItem, 0);
+				$unitPrice = max((float)$teller->add($unitPrice, $amountPerItem), 0);
 	
 				if ($unitPrice > 0) {
 					if ($discount->percentageOffSubject == DiscountRecord::TYPE_ORIGINAL_SALEPRICE) {
-						$discountedUnitPrice = $unitPrice + $discountAmountPerItemPreDiscounts;
+						$discountedUnitPrice = (float)$teller->add($unitPrice, $discountAmountPerItemPreDiscounts);
 					} else {
-						$discountedUnitPrice = $unitPrice + ($discount->percentDiscount * $unitPrice);
+						$discountedUnitPrice = (float)$teller->add(
+							$unitPrice,
+							$teller->multiply($unitPrice, $discount->percentDiscount)
+						);
 					}
 	
-					$discountedSubtotal = Currency::round($discountedUnitPrice * $item->qty);
-					$amountOfPercentDiscount = $discountedSubtotal - $lineItemSubtotal;
+					$discountedSubtotal = (float)$teller->multiply($discountedUnitPrice, $item->qty);
+					$amountOfPercentDiscount = (float)$teller->subtract($discountedSubtotal, $lineItemSubtotal);
 					$this->_discountUnitPricesByLineItem[$lineItemHashId] = $discountedUnitPrice;
 					$adjustment->amount = $amountOfPercentDiscount; //Adding already rounded
 				} else {
@@ -149,7 +258,7 @@ class MultiCouponCodes extends DiscountAdjuster
 				}
 	
 				if ($adjustment->amount != 0) {
-					$this->_discountTotal += $adjustment->amount;
+					$this->_discountTotal = (float)$teller->add($this->_discountTotal, $adjustment->amount);
 					$adjustments[] = $adjustment;
 				}
 			}
@@ -192,5 +301,10 @@ class MultiCouponCodes extends DiscountAdjuster
 		}
 	
 		return ($total / 100) * $discount->baseDiscount;
+	}
+	
+	private function _getTeller(): Teller
+	{
+		return Commerce::getInstance()->getCurrencies()->getTeller($this->_order->currency);
 	}
 }

@@ -72,7 +72,15 @@ class MultiCoupon extends Plugin
             OrderAdjustments::class, 
             OrderAdjustments::EVENT_REGISTER_ORDER_ADJUSTERS, 
             function(RegisterComponentTypesEvent $e) {
-                $e->types[] = MultiCouponCodesAdjuster::class;
+                $types = [];
+                foreach ($e->types as $type) {
+                    if ($type == 'craft\\commerce\\adjusters\\Discount') {
+                        $types[] = MultiCouponCodesAdjuster::class;
+                    } else {
+                        $types[] = $type;
+                    }
+                }
+                $e->types = $types;
             }
         );
 
